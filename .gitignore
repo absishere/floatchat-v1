@@ -1,2 +1,4 @@
 floatchat_env
 data
+.env
+chroma_db

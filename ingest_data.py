@@ -1,13 +1,15 @@
+# ingest_data.py
+
 import os
 import glob
 import xarray as xr
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text # <-- IMPORT 'text' HERE
 from sqlalchemy.orm import sessionmaker
 
 # --- Database Configuration ---
 DB_USER = 'postgres'
-DB_PASSWORD = 'your_postgres_password' # <-- IMPORTANT: CHANGE THIS
+DB_PASSWORD = '123456' # <-- IMPORTANT: DOUBLE-CHECK THIS
 DB_HOST = 'localhost'
 DB_PORT = '5432'
 DB_NAME = 'argo_db'
@@ -23,59 +25,70 @@ def process_nc_file(filepath, session):
     """Reads a single NetCDF file and populates the database."""
     print(f"Processing {filepath}...")
     try:
-        with xr.open_dataset(filepath) as ds:
-            # 1. Get or create the float record
-            # The WMO ID is usually in the filename or attributes. Here we parse from filename.
-            wmo_id = os.path.basename(filepath).split('_')[0]
+        with xr.open_dataset(filepath, decode_times=True) as ds:
+            wmo_id = ds.attrs.get('platform_number', os.path.basename(filepath).split('_')[0]).strip()
             
-            # Check if float exists
-            float_obj = session.execute(f"SELECT float_id FROM floats WHERE wmo_id = '{wmo_id}'").fetchone()
+            # 1. Get or create the float record
+            # Use text() to wrap the raw SQL string
+            select_float_sql = text("SELECT float_id FROM floats WHERE wmo_id = :wmo_id")
+            float_obj = session.execute(select_float_sql, {'wmo_id': wmo_id}).fetchone()
+
             if not float_obj:
-                # Insert if not exists and get the new float_id
-                result = session.execute(f"INSERT INTO floats (wmo_id) VALUES ('{wmo_id}') RETURNING float_id;")
+                insert_float_sql = text("INSERT INTO floats (wmo_id) VALUES (:wmo_id) RETURNING float_id")
+                result = session.execute(insert_float_sql, {'wmo_id': wmo_id})
                 float_id = result.fetchone()[0]
-                session.commit()
             else:
                 float_id = float_obj[0]
             
-            # 2. Loop through each profile in the file
+            # 2. Loop through each profile
             num_profiles = ds.dims['N_PROF']
             for i in range(num_profiles):
-                # Extract profile metadata
                 profile_data = ds.isel(N_PROF=i)
                 cycle_num = int(profile_data['CYCLE_NUMBER'].item())
                 
-                # Check if this profile already exists to avoid duplicates
-                profile_exists = session.execute(f"SELECT profile_id FROM profiles WHERE float_id = {float_id} AND cycle_number = {cycle_num}").fetchone()
+                # Check if this profile already exists
+                select_profile_sql = text("SELECT profile_id FROM profiles WHERE float_id = :fid AND cycle_number = :cn")
+                profile_exists = session.execute(select_profile_sql, {'fid': float_id, 'cn': cycle_num}).fetchone()
+
                 if profile_exists:
                     print(f"  Skipping profile {cycle_num} for float {wmo_id} (already exists).")
                     continue
 
                 # Insert the new profile record
-                profile_sql = f"""
+                profile_sql = text("""
                 INSERT INTO profiles (float_id, cycle_number, profile_date, latitude, longitude)
-                VALUES ({float_id}, {cycle_num}, '{profile_data['JULD'].dt.strftime('%Y-%m-%d %H:%M:%S %Z').item()}', {profile_data['LATITUDE'].item()}, {profile_data['LONGITUDE'].item()})
+                VALUES (:fid, :cn, :p_date, :lat, :lon)
                 RETURNING profile_id;
-                """
-                profile_id = session.execute(profile_sql).fetchone()[0]
-                
-                # 3. Create a DataFrame for all measurements in this profile
+                """)
+                profile_params = {
+                    'fid': float_id,
+                    'cn': cycle_num,
+                    'p_date': pd.to_datetime(profile_data['JULD'].values).to_pydatetime(),
+                    'lat': profile_data['LATITUDE'].item(),
+                    'lon': profile_data['LONGITUDE'].item()
+                }
+                # Insert new profile record
+                profile_id = session.execute(profile_sql, profile_params).fetchone()[0]
+                session.flush()  # send it to DB immediately
+
+                # 3. Create a DataFrame for all measurements
                 measurements_df = pd.DataFrame({
                     'profile_id': profile_id,
                     'pressure': profile_data['PRES'].values,
                     'temperature': profile_data['TEMP'].values,
                     'salinity': profile_data['PSAL'].values,
                 })
-                
-                # Drop rows with no valid measurements
                 measurements_df.dropna(subset=['pressure', 'temperature', 'salinity'], how='all', inplace=True)
-                
-                # 4. Bulk insert measurements into the database
+
+                # 4. Bulk insert measurements
                 if not measurements_df.empty:
-                    measurements_df.to_sql('measurements', engine, if_exists='append', index=False)
-                
-                session.commit()
+                    conn = session.connection()
+                    measurements_df.to_sql('measurements', conn, if_exists='append', index=False)
+
                 print(f"  Successfully ingested profile {cycle_num} for float {wmo_id}.")
+
+            
+            session.commit() # Commit all changes for this file at once
 
     except Exception as e:
         session.rollback()
@@ -86,7 +99,7 @@ if __name__ == "__main__":
     nc_files = glob.glob(os.path.join(data_dir, '*.nc'))
     
     if not nc_files:
-        print("No NetCDF files found in the 'data' directory. Run download_data.py first.")
+        print("No NetCDF files found in the 'data' directory.")
     else:
         with Session() as session:
             for f in nc_files:
