@@ -1,4 +1,4 @@
-# rag_agent.py
+# rag_agent.py (The Correct, Refactored Version)
 
 from sqlalchemy import create_engine
 from langchain_community.utilities import SQLDatabase
@@ -9,14 +9,18 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 # --- Database Configuration ---
 DB_USER = 'postgres'
-DB_PASSWORD = '123456'  # Your password
+DB_PASSWORD = '123654'  # Your password
 DB_HOST = 'localhost'
 DB_PORT = '5432'
 DB_NAME = 'argo_db'
 DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-def main():
-    print("🤖 Initializing RAG Agent...")
+def get_rag_agent():
+    """
+    Initializes and returns the RAG components (retriever and agent).
+    This function is imported by our Streamlit app.
+    """
+    print("🤖 Initializing RAG Agent for the UI...")
 
     # --- Initialize Components ---
     embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
@@ -27,51 +31,40 @@ def main():
     db_engine = create_engine(DATABASE_URL)
     db = SQLDatabase(db_engine)
     llm = ChatOllama(model="llama3:8b", temperature=0)
-    sql_agent_executor = create_sql_agent(llm, db=db, verbose=True)
+    sql_agent_executor = create_sql_agent(llm, db=db, verbose=True) # Turn verbose on for debugging in terminal
     print("   - SQL agent created.")
+    
+    return retriever, sql_agent_executor
 
-    print("\n✅ RAG agent is ready! Ask your questions.")
-    print("   Type 'exit' to quit.")
+def run_rag_query(user_question, retriever, sql_agent_executor):
+    """
+    Takes a user question and the agent components and returns the AI's answer.
+    """
+    # 1. Retrieve context
+    docs = retriever.invoke(user_question)
+    context = "\n".join([d.page_content for d in docs])
 
-    while True:
-        try:
-            user_question = input("\nYour question: ")
-            if not user_question:
-                continue
-            if user_question.lower() == 'exit':
-                break
+    # 2. Build the prompt
+    full_input = f"""
+    Based on the question and the provided context, please answer the user's question.
+    If the answer is in the context, you can answer directly.
+    If the question requires data from the database, use your SQL tools.
 
-            # --- RAG Steps ---
-            # 1. Retrieve context
-            docs = retriever.invoke(user_question) # Using .invoke() as recommended
-            context = "\n".join([d.page_content for d in docs])
+    Context:
+    ---
+    {context}
+    ---
 
-            # 2. Build the new, simpler prompt
-            full_input = f"""
-            Based on the question and the provided context, please answer the user's question.
-            The context may contain helpful information about the database schema or definitions.
-            If the answer is in the context, you can answer directly.
-            If the question requires data from the database, use your SQL tools.
+    Question: {user_question}
+    """
 
-            Context:
-            ---
-            {context}
-            ---
+    # 3. Invoke the agent
+    result = sql_agent_executor.invoke(
+        {"input": full_input},
+        {"handle_parsing_errors": True}
+    )
+    
+    return result["output"]
 
-            Question: {user_question}
-            """
-
-            # 3. Invoke the agent with the new prompt and error handling
-            result = sql_agent_executor.invoke(
-                {"input": full_input},
-                {"handle_parsing_errors": True} # <-- ADDED ERROR HANDLING
-            )
-
-            print("\nAI Response:")
-            print(result["output"])
-
-        except Exception as e:
-            print(f"\nAn error occurred: {e}")
-
-if __name__ == "__main__":
-    main()
+# Note: There is no `if __name__ == "__main__"` block here.
+# This file is now purely a library for app.py to use.
