@@ -12,7 +12,7 @@ load_dotenv()
 
 # --- Database Configuration ---
 DB_USER = 'postgres'
-DB_PASSWORD = '123456'  # Your correct password
+DB_PASSWORD = '1234'  # Your correct password
 DB_HOST = 'localhost'
 DB_PORT = '5432'
 DB_NAME = 'argo_db'
