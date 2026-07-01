@@ -2,4 +2,5 @@ floatchat_env
 data
 .env
 chroma_db
-__pycache__
+__pycache__/
+.venv/
