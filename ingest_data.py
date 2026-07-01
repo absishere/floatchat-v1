@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 # --- Database Configuration ---
 DB_USER = 'postgres'
-DB_PASSWORD = '123654'  # Your password
+DB_PASSWORD = '123456'  # Your password
 DB_HOST = 'localhost'
 DB_PORT = '5432'
 DB_NAME = 'argo_db'

@@ -1,6 +1,8 @@
 # app.py
 
 import streamlit as st
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+
 # Import the refactored functions from your Gemini agent script
 from ai_agent import initialize_agent, run_gemini_query 
 
@@ -20,7 +22,15 @@ st.caption("Powered by Google Gemini Pro")
 def load_agent():
     return initialize_agent()
 
-agent_executor = load_agent()
+try:
+    agent_executor = load_agent()
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
+except Exception as exc:
+    st.error("FloatChat could not start. Check your database connection and Gemini API key.")
+    st.exception(exc)
+    st.stop()
 
 # --- Chat History Management ---
 if "messages" not in st.session_state:
@@ -45,7 +55,16 @@ if prompt := st.chat_input("What is the average salinity?"):
     with st.chat_message("assistant"):
         # Show a thinking spinner while the agent works
         with st.spinner("Querying the database with Gemini..."):
-            response = run_gemini_query(prompt, agent_executor)
+            try:
+                response = run_gemini_query(prompt, agent_executor)
+            except ChatGoogleGenerativeAIError:
+                response = (
+                    "Gemini rejected the configured API key. "
+                    "Create a valid Gemini API key in Google AI Studio, update "
+                    "`GOOGLE_API_KEY` in `.env`, then restart Streamlit."
+                )
+            except Exception as exc:
+                response = f"Sorry, I hit an error while answering: {exc}"
             st.markdown(response)
     
     # Add assistant response to history
